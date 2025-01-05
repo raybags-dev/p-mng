@@ -11,184 +11,124 @@ import {
   isAdmin
 } from '../../middleware/auth.js'
 
-import { SearchUserDocsController } from '../controllers/searchDatabaseController.js'
+import ControllerRegistry from '../controllers/controllerRegistry.js'
 
-import { DocsUploaderController } from '../controllers/uploaderController.js'
-
-import {
+const {
+  SearchUserDocsController,
+  FindOneDocController,
+  deleteUserDocsController,
   LoginController,
   CreateUserController,
   GetAllUsersController,
+  DocsUploaderController,
   GetUserController,
   AllUserDocsController,
-  UpdateSubscriptionController,
-  GetSubscriptionController
-} from '../controllers/userController.js'
-
-import {
+  GetSubscriptionController,
+  DeleteOneDocController,
+  paginatedDocsController,
   ForgotPasswordController,
-  UpdatePasswordController
-} from '../controllers/passwordController.js'
-
-import { paginatedDocsController } from '../controllers/perginatedDocsController.js'
-
-import {
-  deleteUserAndOwnDocsController,
-  deleteUserDocsController,
-  DeleteOneDocController
-} from '../controllers/deleteUserDocsController.js'
-
-import { FindOneDocController } from '../controllers/findOneController.js'
+  UpdatePasswordController,
+  UpdateSubscriptionController,
+  deleteUserAndOwnDocsController
+} = ControllerRegistry
 
 const routes = [
   {
+    method: 'post',
     path: '/raybags/manager/create-user',
     handler: CreateUserController
   },
   {
+    method: 'post',
     path: '/raybags/manager/user/login',
+    middleware: [loginUser],
     handler: LoginController
   },
   {
+    method: 'post',
     path: '/raybags/manager/get-users',
+    middleware: [authMiddleware, isAdmin],
     handler: GetAllUsersController
   },
   {
+    method: 'post',
     path: '/raybags/manager/whoami',
+    middleware: [authMiddleware],
     handler: GetUserController
   },
   {
+    method: 'post',
     path: '/raybags/manager/user-docs',
+    middleware: [authMiddleware],
     handler: AllUserDocsController
   },
   {
+    method: 'put',
     path: '/raybags/manager/user/:userId/subscription',
+    middleware: [authMiddleware, isAdmin],
     handler: UpdateSubscriptionController
   },
   {
+    method: 'get',
+    path: '/raybags/manager/user/:userId/subscription',
+    middleware: [authMiddleware, isAdmin],
+    handler: GetSubscriptionController
+  },
+  {
+    method: 'delete',
     path: '/raybags/manager/delete-user-and-docs/:userId',
+    middleware: [authMiddleware],
     handler: deleteUserAndOwnDocsController
   },
   {
-    path: '/raybags/manager/delete-user-docs/:userId',
-    handler: deleteUserDocsController
-  },
-  {
+    method: 'delete',
     path: '/raybags/manager/delete-doc/:id',
+    middleware: [authMiddleware, checkDocumentAccess],
     handler: DeleteOneDocController
   },
   {
+    method: 'post',
     path: '/raybags/manager/entry/:id',
+    middleware: [authMiddleware, checkDocumentAccess],
     handler: FindOneDocController
   },
   {
+    method: 'post',
     path: '/raybags/manager/user/forgot-password',
     handler: ForgotPasswordController
   },
   {
+    method: 'post',
     path: '/raybags/manager/user/update/password',
+    middleware: [loginUser],
     handler: UpdatePasswordController
   },
   {
-    path: '/raybags/manager/user/:userId/subscription',
-    handler: GetSubscriptionController
+    method: 'post',
+    path: '/raybags/manager/paginated-user-documents',
+    middleware: [authMiddleware],
+    handler: paginatedDocsController
   },
   {
+    method: 'post',
     path: '/raybags/manager/search-docs',
+    middleware: [authMiddleware],
     handler: SearchUserDocsController
   },
   {
+    method: 'post',
     path: '/raybags/manager/upload',
+    middleware: [extractTokenMiddleware, authMiddleware],
     handler: DocsUploaderController
-  },
-  {
-    path: '/raybags/manager/paginated-user-documents',
-    handler: paginatedDocsController
   }
 ]
 
-routes.forEach(route => {
-  if (route.path == '/raybags/manager/create-user') {
-    router.post(route.path, route.handler)
-  }
-  if (route.path == '/raybags/manager/user/login') {
-    router.post(route.path, loginUser, route.handler)
-  }
-  if (route.path == '/raybags/manager/get-users') {
-    router.post(
-      route.path,
-      authMiddleware,
-      isAdmin,
-      asyncMiddleware(route.handler)
-    )
-  }
-  if (route.path == '/raybags/manager/whoami') {
-    router.post(route.path, authMiddleware, asyncMiddleware(route.handler))
-  }
-  if (route.path == '/raybags/manager/user-docs') {
-    router.post(route.path, authMiddleware, asyncMiddleware(route.handler))
-  }
-  if (route.path == '/raybags/manager/user/:userId/subscription') {
-    router.put(
-      route.path,
-      authMiddleware,
-      isAdmin,
-      asyncMiddleware(route.handler)
-    )
-  }
-  if (route.path == '/raybags/manager/user/:userId/subscription') {
-    router.get(
-      route.path,
-      authMiddleware,
-      isAdmin,
-      asyncMiddleware(route.handler)
-    )
-  }
-  if (route.path == '/raybags/manager/delete-doc/:id') {
-    router.delete(
-      route.path,
-      authMiddleware,
-      checkDocumentAccess,
-      asyncMiddleware(route.handler)
-    )
-  }
-  if (route.path == '/raybags/manager/entry/:id') {
-    router.post(
-      route.path,
-      authMiddleware,
-      checkDocumentAccess,
-      asyncMiddleware(route.handler)
-    )
-  }
-  if (route.path == '/raybags/manager/user/forgot-password') {
-    router.post(route.path, asyncMiddleware(route.handler))
-  }
-  if (route.path == '/raybags/manager/user/update/password') {
-    router.post(route.path, loginUser, route.handler)
-  }
-
-  if (
-    route.path == '/raybags/manager/delete-user-and-docs/:userId' ||
-    route.path == '/raybags/manager/delete-user-docs/:userId'
-  ) {
-    router.delete(route.path, authMiddleware, asyncMiddleware(route.handler))
-  }
-
-  if (route.path == '/raybags/manager/paginated-user-documents') {
-    router.post(route.path, authMiddleware, asyncMiddleware(route.handler))
-  }
-
-  if (route.path == '/raybags/manager/search-docs') {
-    router.post(route.path, authMiddleware, asyncMiddleware(route.handler))
-  }
-  if (route.path == '/raybags/manager/upload') {
-    router.post(
-      route.path,
-      extractTokenMiddleware,
-      authMiddleware,
-      asyncMiddleware(route.handler)
-    )
-  }
+routes.forEach(({ method, path, handler, middleware = [] }) => {
+  router[method](
+    path,
+    ...middleware.map(m => asyncMiddleware(m)),
+    asyncMiddleware(handler)
+  )
 })
 
 export default router
