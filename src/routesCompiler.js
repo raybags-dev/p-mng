@@ -1,11 +1,12 @@
 import router from './routes/mainRoutes.js'
 
+import ControllerRegistry from './controllers/controllerRegistry.js'
+
+const { NotSupportedRouter } = ControllerRegistry
+
 export default async app => {
   try {
     app.use(router)
-    const { NotSupportedRouter } = await import(
-      './controllers/notSupportedController.js'
-    )
     try {
       app.use(NotSupportedRouter)
     } catch (e) {

@@ -6,7 +6,6 @@ import connectDB from '../src/DB/connect.js'
 import { clearDevPort } from '../middleware/util.js'
 
 import {
-  logger,
   devLogger,
   findRootAndCreateLogsFolder
 } from '../middleware/loggers.js'
@@ -57,11 +56,10 @@ const startServer = async (app, port, attempt = 1) => {
     })
   } catch (err) {
     if (err.code === 'EADDRINUSE') {
-      console.log(`Port ${port} is already in use. Attempting to resolve...`)
       await clearDevPort(port)
 
       if (attempt < 3) {
-        console.log(`Retrying to start server on port ${port}...`)
+        devLogger(`Retrying to start server on port ${port}...`, 'warn')
         await startServer(app, port, attempt + 1)
       } else {
         console.error(`Failed to start server after ${attempt} attempts.`)
@@ -75,7 +73,6 @@ const startServer = async (app, port, attempt = 1) => {
 }
 
 export default async app => {
-  // Middleware to handle URL rewriting
   app.use('/raybags/manager/*', (req, res, next) => {
     let newUrl = req.url.replace(
       '/raybags/manager/',
@@ -84,7 +81,5 @@ export default async app => {
     req.url = newUrl
     next()
   })
-
-  // Start server with retry logic
   await startServer(app, PORT)
 }
