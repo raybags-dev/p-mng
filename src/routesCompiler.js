@@ -1,18 +1,10 @@
 import router from './routes/mainRoutes.js'
-
-import ControllerRegistry from './controllers/controllerRegistry.js'
-
-const { NotSupportedRouter } = ControllerRegistry
+import devLogger from '../middleware/loggers.js'
 
 export default async app => {
   try {
     app.use(router)
-    try {
-      app.use(NotSupportedRouter)
-    } catch (e) {
-      console.log(`Error setting up NotSupportedRouter: ${e}`)
-    }
-  } catch (error) {
-    console.error('Error reading router files:', error)
+  } catch (e) {
+    devLogger(`Error setting up Router: ${e}`, 'error')
   }
 }

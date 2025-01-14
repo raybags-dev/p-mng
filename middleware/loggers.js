@@ -1,4 +1,3 @@
-import kleur from 'kleur'
 import winston from 'winston'
 import path from 'path'
 import { existsSync } from 'fs'
@@ -48,7 +47,7 @@ const getWinstonConfig = () => {
     ]
   })
 }
-export async function findRootAndCreateLogsFolder () {
+export async function handleLogging () {
   let currentDir = process.cwd()
   const knownFile = 'package.json'
   const logFiles = ['error.log', 'info.log', 'warn.log']
@@ -95,80 +94,47 @@ export async function findRootAndCreateLogsFolder () {
     }
   }
 }
-const formatLogMessage = async (message, level) => {
-  const timestamp = new Date().toISOString()
-  const logLevels = ['info', 'warn', 'error']
-
-  if (!logLevels.includes(level.toLowerCase())) {
-    return message
-  }
-
-  let logMessage = `${timestamp} [${level.toUpperCase()}]: `
-
-  // Add the message directly
-  if (typeof message === 'string') {
-    logMessage += message
-  } else if (Array.isArray(message)) {
-    logMessage += JSON.stringify(message)
-  } else if (typeof message === 'object') {
-    logMessage += JSON.stringify(message)
-  } else {
-    logMessage += message.toString()
-  }
-
-  return logMessage
-}
-export async function logger (message, level = 'info') {
+export default function devLogger (message, logLevel = 'info', onlyLog = false) {
   const winston = getWinstonConfig()
-  try {
-    const logMessage = await formatLogMessage(message, level)
+  const timestamp = new Date().toISOString()
+  const formattedMessage = `${timestamp}: ${message}`
 
-    switch (level.toLowerCase()) {
+  if (onlyLog) {
+    switch (logLevel.toLowerCase()) {
       case 'info':
-        winston.info(logMessage)
+        console.info(formattedMessage)
         break
       case 'warn':
-        winston.warn(logMessage)
+        console.warn(formattedMessage)
         break
       case 'error':
-        winston.error(logMessage)
+        console.error(formattedMessage)
+        break
+      case 'table':
+        console.table(formattedMessage)
         break
       default:
-        winston.info(logMessage)
+        console.warn(`> Unknown log level: ${logLevel}`)
+        throw new Error('Invalid log level in <devLogger>')
     }
-  } catch (error) {
-    console.log(message)
-    winston.info(message)
-  }
-}
-export function devLogger (message, logLevel = 'info') {
-  const timestamp = new Date().toISOString()
-  const original_timestamp = kleur.italic().cyan(`${timestamp}`)
-  const formattedMessage = `${original_timestamp} ${message}`
+  } else {
+    switch (logLevel.toLowerCase()) {
+      case 'info':
+        winston.info(formattedMessage)
+        break
+      case 'warn':
+        winston.warn(formattedMessage)
+        break
+      case 'error':
+        winston.error(formattedMessage)
 
-  switch (logLevel.toLowerCase()) {
-    case 'info':
-      console.log(kleur.green(`${formattedMessage}`))
-      break
-    case 'warn':
-      console.warn(kleur.yellow(`${formattedMessage}`))
-      break
-    case 'error':
-      console.error(kleur.red(`${formattedMessage}`))
-      break
-    case 'table':
-      if (
-        Array.isArray(message) &&
-        message.length > 0 &&
-        typeof message[0] === 'object'
-      ) {
-        console.table(message)
-      } else {
-        console.log(kleur.italic().cyan(`${formattedMessage}`))
-      }
-      break
-    default:
-      console.warn(kleur.bgRed(`> Unknown log level: ${logLevel}`))
-      throw new Error('Invalid log level in <devLogger>')
+        break
+      case 'table':
+        winston.info(formattedMessage)
+        break
+      default:
+        winston.warn(`> Unknown log level: ${logLevel}`)
+        throw new Error('Invalid log level in <devLogger>')
+    }
   }
 }

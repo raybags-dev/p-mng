@@ -1,9 +1,7 @@
 import nodemailer from 'nodemailer'
 import { config } from 'dotenv'
-import { generatePasswordResetToken } from '../src/models/user.js'
 
 config()
-
 const { EMAIL_PROVIDER, EMAIL_FOR_NOTIFICATION, EMAIL__APP_PASS } = process.env
 
 // Configure Nodemailer transporter

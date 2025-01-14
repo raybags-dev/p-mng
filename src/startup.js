@@ -5,16 +5,13 @@ const { MONGO_URI, NODE_ENV } = process.env
 import connectDB from '../src/DB/connect.js'
 import { clearDevPort } from '../middleware/util.js'
 
-import {
-  devLogger,
-  findRootAndCreateLogsFolder
-} from '../middleware/loggers.js'
+import devLogger, { handleLogging } from '../middleware/loggers.js'
 
 const PORT = process.env.PORT || 6001
 
 async function starterLogger (port) {
   try {
-    await findRootAndCreateLogsFolder()
+    await handleLogging()
 
     const memoryUsage = process.memoryUsage()
     const currentMemory =
@@ -38,10 +35,10 @@ async function starterLogger (port) {
     ]
 
     starterMessages.forEach((message, index) =>
-      setTimeout(devLogger, index * 60, message, 'info')
+      setTimeout(devLogger, index * 60, message, 'info', true)
     )
   } catch (e) {
-    console.error(`Error occurred in starterLogger function: ${e}`)
+    devLogger(`Error in starterLogger function: ${e.message}`, 'error')
   }
 }
 
@@ -59,24 +56,28 @@ const startServer = async (app, port, attempt = 1) => {
       await clearDevPort(port)
 
       if (attempt < 3) {
-        devLogger(`Retrying to start server on port ${port}...`, 'warn')
+        devLogger(`Retrying to start server on port ${port}...`, 'warn', true)
         await startServer(app, port, attempt + 1)
       } else {
-        console.error(`Failed to start server after ${attempt} attempts.`)
+        devLogger(
+          `Failed to start server after ${attempt} attempts.`,
+          'warn',
+          true
+        )
         process.exit(1)
       }
     } else {
-      console.error('Server error:', err)
+      devLogger(`Server error:, ${err}`, 'error')
       process.exit(1)
     }
   }
 }
 
 export default async app => {
-  app.use('/raybags/manager/*', (req, res, next) => {
+  app.use('/ray-bags/manager-node/*', (req, res, next) => {
     let newUrl = req.url.replace(
-      '/raybags/manager/',
-      `http://${PORT}/raybags/manager/`
+      '/ray-bags/manager-node/',
+      `http://${PORT}/ray-bags/manager-node/`
     )
     req.url = newUrl
     next()
