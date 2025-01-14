@@ -1,211 +1,204 @@
-import jwt from 'jsonwebtoken'
-import { config } from 'dotenv'
-config()
-const { ACCESS_TOKEN } = process.env
+// src/middleware/auth.js
 import { USER_MODEL } from '../src/models/user.js'
-import { DOCUMENT } from '../src/models/documentModel.js'
+import jwt from 'jsonwebtoken'
+import bcrypt from 'bcrypt'
+import { config } from 'dotenv'
 
-export const generateJWTToken = async (data, version, superUserToken) => {
-  const expiresIn = 60000
-  const payload = {
-    email: data.email,
-    _id: data._id,
-    version: version,
-    isAdmin: data.isAdmin,
-    isSuperUser: data.isSuperUser || false,
-    superUserToken: data.isSuperUser ? superUserToken : null
-  }
+config()
 
-  return new Promise((resolve, reject) => {
-    jwt.sign(payload, ACCESS_TOKEN, { expiresIn }, (err, token) => {
-      if (err) reject(err)
-      resolve(token)
-    })
-  })
+const { SUPER_USER_TOKEN } = process.env
+
+import { sendResponse } from './util.js'
+import devLogger from './loggers.js'
+import { encrypt, generateRandomToken } from '../utils/tokenUtils.js'
+
+const SUPERUSER_TOKEN_EXPIRY = 24 * 60 * 60 * 1000
+
+export const generateSecureToken = (payload, secret, expiresIn = '1h') => {
+  return jwt.sign(payload, secret, { expiresIn })
 }
-export const loginUser = async (req, res, next) => {
-  const {
-    email = '',
-    password = '',
-    verification_token,
-    isAdmin,
-    superUserToken
-  } = req.body
+
+//**** */
+
+//**** */
+
+// export const loginHelper = async (req, res, next) => {
+//   const { email, password } = req.body
+
+//   try {
+//     // Fetch the user from the database
+//     const user = await USER_MODEL.findOne({ email })
+//     if (!user) {
+//       return res.status(404).json({ error: 'User not found' })
+//     }
+
+//     // Check if the password is correct
+//     const isPasswordValid = await bcrypt.compare(password, user.password)
+//     if (!isPasswordValid) {
+//       return res.status(401).json({ error: 'Invalid credentials' })
+//     }
+
+//     // Generate tokens
+//     const accessToken = generateSecureToken(
+//       { _id: user._id },
+//       ACCESS_ADMIN_TOKEN
+//     )
+//     const superUserToken = user.isSuperUser
+//       ? generateSecureToken({ _id: user._id }, SUPER_USER_TOKEN)
+//       : null
+
+//     // Set tokens in response headers
+//     res.setHeader('auth-token', accessToken)
+//     if (user.isAdmin) res.setHeader('admin-token', accessToken)
+//     if (user.isSuperUser) res.setHeader('super-user-token', superUserToken)
+
+//     // Attach user to request object
+//     req.user = user
+
+//     next()
+//   } catch (error) {
+//     console.error('Login helper error:', error.message || error)
+//     res.status(500).json({ error: 'Internal server error' })
+//   }
+// }
+
+export const loginHelper = async (req, res, next) => {
+  const { email, password } = req.body
 
   try {
     const user = await USER_MODEL.findOne({ email })
     if (!user) {
-      return res
-        .status(401)
-        .json({ error: 'Unauthorized. Signup to use this service.' })
+      return sendResponse(res, 404, 'User not found', true)
     }
 
-    if (verification_token) {
-      try {
-        if (verification_token !== user.password_reset_token) {
-          return res.status(401).json({ error: 'Invalid verification token' })
-        }
-
-        user.password = password
-        await user.save()
-
-        user.password_reset_token = undefined
-        await user.save()
-
-        const token = await generateJWTToken(
-          {
-            email: user.email,
-            _id: user._id,
-            isAdmin: user.isAdmin,
-            version: user.version,
-            isSuperUser: user.isSuperUser
-          },
-          user.version,
-          user.superUserToken
-        )
-
-        res.setHeader('authorization', `Bearer ${token}`)
-        req.user = user.toObject()
-        return res
-          .status(200)
-          .json({ message: 'Password updated successfully.' })
-      } catch (error) {
-        console.log(error)
-        return res
-          .status(500)
-          .json({ error: 'Error updating password', message: error.message })
-      }
+    const isPasswordValid = await bcrypt.compare(password, user.password)
+    if (!isPasswordValid) {
+      return sendResponse(res, 401, 'Invalid credentials', true)
     }
 
-    const isMatch = await user.comparePassword(password)
+    // Generate a new session token
+    const sessionToken = generateRandomToken()
+    user.sessionTokens.push(sessionToken)
+    await user.save()
 
-    if (!isMatch) {
-      return res.status(401).json({ error: 'Invalid email or password' })
+    // Set tokens in response headers
+    res.setHeader('auth-token', sessionToken)
+    // if (user.isAdmin) res.setHeader('admin-token', sessionToken)
+    if (user.isSuperUser) {
+      const superUserToken = generateSecureToken(
+        {
+          _id: user._id,
+          email: user.email,
+          isAdmin: user.isAdmin,
+          isSuperUser: user.isSuperUser || false,
+          superUserToken: user.isSuperUser ? superUserToken : null
+        },
+        SUPER_USER_TOKEN
+      )
+      res.setHeader('super-user-token', superUserToken)
     }
 
-    const userData = {
-      email: user.email,
-      _id: user._id,
-      version: user.version,
-      isAdmin: user.isAdmin,
-      isSuperUser: user.isSuperUser || false
-    }
-
-    if (isAdmin) {
-      userData.isAdmin = true
-      if (superUserToken) {
-        userData.isSuperUser = true
-      }
-    }
-
-    req.locals = req.locals || {}
-
-    const token = await generateJWTToken(
-      userData,
-      user.version,
-      user.superUserToken
-    )
-
-    // Set token in the response header
-    res.setHeader('authorization', `Bearer ${token}`)
-    if (user.superUserToken) {
-      res.setHeader('admin-token', user.superUserToken)
-      req.locals.superUserToken = user.superUserToken
-    }
-
-    req.user = user.toObject()
+    req.user = user
     next()
   } catch (error) {
-    console.log(error)
-    res.status(500).json({ error: 'Server error', message: error.message })
+    devLogger(`Login helper error: '${error.message || error}`, 'error')
+    sendResponse(res, 500, 'Internal server error', true)
   }
 }
-export const extractTokenMiddleware = (req, res, next) => {
-  const authHeader = req.headers['authorization']
-  if (authHeader) {
-    const [bearer, token] = authHeader.split(' ')
-    req.token = token
-  }
-  next()
-}
-export const authMiddleware = async (req, res, next) => {
-  const authHeader = req.headers['authorization']
 
-  if (!authHeader) {
-    return res
-      .status(401)
-      .json({ error: 'Authentication Failed: Missing required header(s)' })
-  }
-  const [bearer, token] = authHeader.split(' ')
-
-  if (bearer !== 'Bearer' || !token) {
-    return res.status(401).json({ error: 'Invalid Authorization header' })
-  }
-
+export const logoutHelper = async (req, res, next) => {
   try {
-    const decodedToken = jwt.verify(token, ACCESS_TOKEN)
-    req.user = decodedToken
-    req.token = token
+    const token = req.headers['auth-token']
+    if (!token) return sendResponse(res, 400, 'Session token is required', true)
 
-    const userEmail = decodedToken.email
+    const fromAllDevices = req.query['from-all-devices'] === 'true'
 
-    if (!userEmail) {
-      return res.status(401).json({ error: 'Missing email in token data' })
-    }
+    const user = await USER_MODEL.findOne({ sessionTokens: token })
+    if (!user)
+      return sendResponse(
+        res,
+        404,
+        'User not found or already logged out',
+        true
+      )
+    let seesion_tokens_to_remove
 
-    const user = await USER_MODEL.findOne({ email: userEmail }).maxTimeMS(10000)
-
-    if (!user) {
-      return res.status(401).json({ error: 'Unauthorized action!' })
-    }
-
-    if (decodedToken.version !== user.version) {
-      return res.status(401).json({ error: 'User has been deleted!' })
-    }
-
-    if (user.isAdmin) {
-      if (user.superUserToken && decodedToken.isSuperUser) {
-        req.locals = { user, isSuperUser: true }
-      } else {
-        req.locals = { user }
-      }
+    if (fromAllDevices) {
+      seesion_tokens_to_remove = [...user.sessionTokens]
+      user.sessionTokens = []
     } else {
-      req.locals = { user }
+      seesion_tokens_to_remove = [token]
+
+      user.sessionTokens = user.sessionTokens.filter(t => t !== token)
     }
 
+    // Save the updated user
+    await user.save()
+
+    const tokens = { tokens: seesion_tokens_to_remove }
+
+    sendResponse(
+      res,
+      200,
+      `Logout successful${fromAllDevices ? ' from all devices' : ''}`,
+      false,
+      tokens
+    )
     next()
   } catch (error) {
-    if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({ error: 'Token expired' })
-    }
-
-    console.error('Authentication error:', error.message || error)
-    return res.status(401).json({ error: 'Authentication failed' })
+    devLogger(`Logout helper error: ${error.message || error}`, 'error')
+    sendResponse(res, 500, 'Internal server error', true)
   }
 }
-export const checkDocumentAccess = async (req, res, next) => {
+
+export const elevateHelper = async (req, res, next) => {
   try {
-    const { user } = req.locals // retrieve user object from req.locals
-    const document = await DOCUMENT.findById(req.params.id)
+    const { userId, password } = req.body
 
-    if (!document) {
-      return res.status(404).json({ error: 'Document not found' })
+    // Find the user by ID
+    const user = await USER_MODEL.findById(userId)
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' })
     }
-    if (document.user.toString() !== user._id.toString() && !user.isAdmin) {
-      return res.status(403).json({ error: 'Forbidden' })
+
+    // Verify the user's password (re-authentication for security)
+    const isPasswordValid = await bcrypt.compare(password, user.password)
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: 'Invalid credentials' })
     }
-    req.document = document
+
+    // Empty the sessionTokens array
+    user.sessionTokens = []
+
+    // Set the user as a superuser
+    user.isSuperUser = true
+
+    // Generate a new session token
+    const sessionToken = generateRandomToken()
+    user.sessionTokens.push(sessionToken)
+
+    // Generate and encrypt the super-user token
+    const superUserToken = generateRandomToken()
+    const encryptedSuperUserToken = encrypt(superUserToken)
+
+    // Store the encrypted token and its expiry time in the database
+    user.superUserToken = encryptedSuperUserToken
+    user.superUserTokenExpiry = Date.now() + SUPERUSER_TOKEN_EXPIRY
+
+    // Save the updated user
+    await user.save()
+
+    // Set the new session token in response headers
+    res.setHeader('auth-token', sessionToken)
+    res.setHeader('super-user-token', superUserToken)
+
+    // Add the updated user to the request object
+    req.user = user
+
+    // Continue to the next middleware/controller
     next()
   } catch (error) {
-    console.error(error.message)
-    res.status(500).json({ error: 'Server error', message: 'Try again later' })
+    console.error('Elevate helper error:', error.message || error)
+    res.status(500).json({ error: 'Internal server error' })
   }
-}
-export const isAdmin = async (req, res, next) => {
-  if (!req.user.isAdmin) {
-    return res.status(403).json({
-      message: 'FORBIDDEN: Access denied!'
-    })
-  }
-  next()
 }

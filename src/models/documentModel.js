@@ -1,110 +1,212 @@
 import mongoose from 'mongoose'
-import { USER_MODEL } from './user.js'
+import crypto from 'crypto'
+import { promisify } from 'util'
 
-const DocumentModel = {
-  originalname: {
-    type: String,
-    required: true
-  },
-  filename: {
-    type: String,
-    required: true
-  },
-  contentType: {
-    type: String,
-    required: true
-  },
-  token: {
-    type: String,
-    maxlength: 500,
-    minlength: 3
-  },
-  data: {
-    type: Buffer,
-    required: true
-  },
-  url: {
+const scrypt = promisify(crypto.scrypt)
+
+const ENCRYPTION_KEY_LENGTH = 32
+const SALT_LENGTH = 64
+const IV_LENGTH = 16
+const ENCRYPTION_ALGORITHM = 'aes-256-gcm'
+const HASH_ITERATIONS = 100000
+
+const PasswordDocSchema = {
+  service: {
     type: String,
     required: true,
-    default: ''
+    trim: true,
+    maxlength: 100,
+    index: true
   },
-  signature: {
+  username: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: 100,
+    index: true
+  },
+  passwordHash: {
     type: String,
     required: true
   },
-  expiresAt: {
+  iv: {
+    type: String,
+    required: true
+  },
+  salt: {
+    type: String,
+    required: true
+  },
+  createdAt: {
     type: Date,
-    required: true,
-    default: function () {
-      return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-    }
+    default: Date.now
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now
   },
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
-  },
-  size: {
-    type: String,
-    trim: true,
-    maxlength: 500,
-    minlength: 1
-  },
-  encoding: {
-    type: String,
-    trim: true,
-    maxlength: 100,
-    minlength: 1,
-    required: true
-  },
-  description: {
-    type: String,
-    default: 'Description not provided for this document.',
-    trim: true,
-    maxlength: 7000,
-    minlength: 1
+    required: true,
+    index: true
   }
 }
-const DOCUMENT_SCHEMA = new mongoose.Schema(DocumentModel, {
+
+const PASSWORD_DOC_SCHEMA = new mongoose.Schema(PasswordDocSchema, {
   timestamps: true
 })
 
-DOCUMENT_SCHEMA.index({ originalname: 'text', description: 'text' })
-DOCUMENT_SCHEMA.statics.validateDocumentOwnership = async function (
-  req,
-  res,
-  next
-) {
-  try {
-    const user_id = req.user._id
-    const documents = await this.find({ user: user_id }, { data: 0 }).exec()
+// Add methods to the schema
+PASSWORD_DOC_SCHEMA.statics = {
+  async deriveKey (masterPassword, salt) {
+    return scrypt(masterPassword, salt, ENCRYPTION_KEY_LENGTH)
+  },
 
-    if (documents.length === 0) {
-      return res.status(404).json({ error: 'Documents not found' })
+  async encryptPassword (password, masterPassword) {
+    try {
+      // Generate salt and IV
+      const salt = crypto.randomBytes(SALT_LENGTH).toString('hex')
+      const iv = crypto.randomBytes(IV_LENGTH)
+
+      // Derive encryption key from master password
+      const key = await this.deriveKey(masterPassword, salt)
+
+      // Create cipher and encrypt
+      const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, key, iv)
+      let encryptedPassword = cipher.update(password, 'utf8', 'hex')
+      encryptedPassword += cipher.final('hex')
+
+      // Get auth tag for GCM mode
+      const authTag = cipher.getAuthTag()
+
+      // Combine encrypted password and auth tag
+      const hash = encryptedPassword + authTag.toString('hex')
+
+      return {
+        hash,
+        iv: iv.toString('hex'),
+        salt
+      }
+    } catch (error) {
+      throw new Error('Encryption failed: ' + error.message)
+    }
+  },
+
+  async decryptPassword (hash, iv, salt, masterPassword) {
+    try {
+      const key = await this.deriveKey(masterPassword, salt)
+
+      const authTag = Buffer.from(hash.slice(-32), 'hex')
+      const encryptedPassword = hash.slice(0, -32)
+
+      // Create decipher
+      const decipher = crypto.createDecipheriv(
+        ENCRYPTION_ALGORITHM,
+        key,
+        Buffer.from(iv, 'hex')
+      )
+
+      // Set auth tag
+      decipher.setAuthTag(authTag)
+
+      // Decrypt
+      let decrypted = decipher.update(encryptedPassword, 'hex', 'utf8')
+      decrypted += decipher.final('utf8')
+
+      return decrypted
+    } catch (error) {
+      throw new Error('Decryption failed: ' + error.message)
+    }
+  },
+
+  async createPassword (data, masterPassword) {
+    const { service, username, password, userId } = data
+
+    const { hash, iv, salt } = await this.encryptPassword(
+      password,
+      masterPassword
+    )
+
+    return this.create({
+      service,
+      username,
+      passwordHash: hash,
+      iv,
+      salt,
+      user: userId
+    })
+  },
+
+  async getPasswordById (id, masterPassword) {
+    const doc = await this.findById(id)
+    if (!doc) throw new Error('Password not found')
+
+    const password = await this.decryptPassword(
+      doc.passwordHash,
+      doc.iv,
+      doc.salt,
+      masterPassword
+    )
+
+    return {
+      ...doc.toObject(),
+      password
+    }
+  },
+
+  async getAllUserPasswords (userId, masterPassword) {
+    const docs = await this.find({ user: userId })
+
+    return Promise.all(
+      docs.map(async doc => {
+        const password = await this.decryptPassword(
+          doc.passwordHash,
+          doc.iv,
+          doc.salt,
+          masterPassword
+        )
+        return {
+          ...doc.toObject(),
+          password
+        }
+      })
+    )
+  },
+
+  async updatePassword (id, data, masterPassword) {
+    const doc = await this.findById(id)
+    if (!doc) throw new Error('Password not found')
+
+    const updates = { ...data }
+
+    if (data.password) {
+      const { hash, iv, salt } = await this.encryptPassword(
+        data.password,
+        masterPassword
+      )
+      updates.passwordHash = hash
+      updates.iv = iv
+      updates.salt = salt
+      delete updates.password
     }
 
-    const userdocuments = documents.find(doc => doc.user.toString() === user_id)
-    if (!userdocuments) {
-      return res.status(401).json({ error: 'Unauthorized' })
-    }
-    req.locals = { userdocuments }
-    next()
-  } catch (error) {
-    console.log(error)
-    return res.status(500).json({ error: 'Server error' })
+    return this.findByIdAndUpdate(id, updates, {
+      new: true,
+      runValidators: true
+    })
+  },
+
+  async deletePassword (id) {
+    const doc = await this.findByIdAndDelete(id)
+    if (!doc) throw new Error('Password not found')
+    return doc
   }
 }
 
-DOCUMENT_SCHEMA.statics.isDocumentOwner = async function (req) {
-  try {
-    const userId = req.locals.user._id
-    const documentUserId = req.document.user
-    return userId.equals(documentUserId)
-  } catch (error) {
-    console.error('Error in isDocumentOwner:', error)
-    return false
-  }
-}
+PASSWORD_DOC_SCHEMA.index({ user: 1, service: 1 })
+PASSWORD_DOC_SCHEMA.index({ user: 1, username: 1 })
 
-const DOCUMENT = mongoose.model('documents', DOCUMENT_SCHEMA)
-export { DOCUMENT }
+const PASSWORD_MODEL = mongoose.model('documents', PASSWORD_DOC_SCHEMA)
+
+export { PASSWORD_MODEL }
