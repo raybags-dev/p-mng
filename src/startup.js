@@ -35,7 +35,7 @@ async function starterLogger (port) {
     ]
 
     starterMessages.forEach((message, index) =>
-      setTimeout(devLogger, index * 60, message, 'info', true)
+      setTimeout(devLogger, index * 35, message, 'info', true)
     )
   } catch (e) {
     devLogger(`Error in starterLogger function: ${e.message}`, 'error')

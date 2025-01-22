@@ -2,17 +2,21 @@ import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import bcrypt from 'bcrypt'
 import { randomBytes } from 'crypto'
-import { config } from 'dotenv'
-config()
+import 'dotenv/config'
 
 import { USER_MODEL } from '../src/models/user.js'
+import { sendResponse } from '../middleware/util.js'
+
+import devLogger from '../middleware/loggers.js'
 
 const { ENCRYPTION_KEY, ACCESS_ADMIN_TOKEN, SUPER_USER_TOKEN } = process.env
 
 const ALGORITHM = 'aes-256-cbc'
 const IV_LENGTH = 16
 
-export const generateRandomToken = () => randomBytes(64).toString('hex')
+export function genRandomToken () {
+  return randomBytes(64).toString('hex')
+}
 export function encrypt (text) {
   const iv = crypto.randomBytes(IV_LENGTH)
   const cipher = crypto.createCipheriv(
@@ -37,104 +41,242 @@ export function decrypt (text) {
   decrypted = Buffer.concat([decrypted, decipher.final()])
   return decrypted.toString()
 }
-export function verifyToken (token, secret) {
-  return jwt.verify(token, secret)
+export async function hashToken (token) {
+  const saltRounds = 10
+  return await bcrypt.hash(token, saltRounds)
 }
-export async function verifySuperUserToken (req, res, next) {
+export async function compareTokens (plainToken, hashedToken) {
+  return await bcrypt.compare(plainToken, hashedToken)
+}
+export const extractBearerToken = (req, headerName) => {
   try {
-    const userId = req.user._id
-    if (!userId) throw new Error('user could not be found')
-
-    const superUserTokenFromHeader = req.headers['super-user-token']
-    if (!superUserTokenFromHeader) {
-      return res.status(403).json({ error: 'Superuser token is required' })
+    if (!req || !headerName) {
+      throw new Error('expected 2 arguments received less!')
     }
 
-    const user = await USER_MODEL.findById(userId)
-    if (!user || !user.isSuperUser) {
-      return res.status(404).json({ error: 'Superuser access required' })
+    const headerToken = req.headers[headerName]
+    if (!headerToken || !headerToken.startsWith('Bearer ')) {
+      devLogger(`FORBIDDEN: Missing or Invalid token format <<`, 'error')
+      return null
     }
 
-    const decryptedToken = decrypt(user.superUserToken)
-
-    if (decryptedToken !== superUserTokenFromHeader) {
-      return res.status(403).json({ error: 'Invalid superuser token' })
+    return headerToken.split(' ')[1].trim()
+  } catch (e) {
+    devLogger(`FORBIDDEN: ${e.message || e}`, 'error')
+    return null
+  }
+}
+export async function validatePassword (plainPassword, hashedPassword, res) {
+  try {
+    const isValid = await bcrypt.compare(plainPassword, hashedPassword)
+    if (!isValid) {
+      sendResponse(res, 401, 'Invalid credentials', true)
+      return false
     }
-
-    if (Date.now() > user.superUserTokenExpiry) {
-      return res.status(401).json({
-        error: 'Superuser token expired. Please log out and log in again.'
-      })
-    }
-
-    next()
+    return true
   } catch (error) {
-    console.error('Superuser token verification error:', error.message || error)
-    res.status(500).json({ error: 'Internal server error' })
+    console.error('Error during password validation:', error.message || error)
+    sendResponse(res, 500, 'Internal server error', true)
+    return false
+  }
+}
+export function verifyToken (token, secret) {
+  try {
+    return jwt.verify(token, secret)
+  } catch (error) {
+    devLogger(`Token verification failed: ${error}`, 'error')
+    return null
   }
 }
 export function checkTokenExpiry (req, res, next) {
   const { tokenExpiry } = req.user
 
   if (new Date() > new Date(tokenExpiry)) {
-    return res.status(401).json({ error: 'Token expired' })
+    return sendResponse(res, 401, 'UNAUTHORIZED: Token expired', true)
   }
   next()
+}
+export async function isSuperUser (req, res, next) {
+  const _userId_ = req.locals.user?._id
+
+  try {
+    const super_user = await USER_MODEL.findById(_userId_)
+
+    if (!super_user) {
+      devLogger(`User with ID ${_userId_} not found`, 'error')
+      return sendResponse(res, 403, 'FORBIDDEN: Access denied!', true)
+    }
+
+    if (!super_user.isAdmin || !super_user.isSuperUser) {
+      const message = `User with ID ${_userId_} does not have admin/superuser privileges`
+      const resMessage = 'FORBIDDEN: You do not have admin privileges'
+      devLogger(message, 'warn')
+      return sendResponse(res, 403, resMessage, true)
+    }
+
+    // Decrypt and validate the superUserToken
+    const token = await extractBearerToken(req, 'standard-auth')
+
+    if (!token) {
+      const resMessage = 'FORBIDDEN: Missing or invalid superuser token'
+      devLogger(`Missing or invalid super-auth header`, 'warn')
+      return sendResponse(res, 401, resMessage)
+    }
+
+    const decryptedSuperUser = verifyToken(token, ACCESS_ADMIN_TOKEN)
+
+    const decryptedID = decryptedSuperUser._id
+    const localUserID = _userId_.toString()
+
+    if (!decryptedSuperUser || decryptedID !== localUserID) {
+      const message = `Token mismatch: token ID ${decryptedSuperUser?._id}, user ID ${localUserID}`
+      const resMessage = 'FORBIDDEN: Token mismatch'
+      devLogger(message, 'error')
+      return sendResponse(res, 403, resMessage)
+    }
+
+    req.locals.superUser = null
+    req.locals.superUser = super_user
+
+    next()
+  } catch (e) {
+    devLogger(`Error in isSuperUser middleware: ${e.message || e}`, 'error')
+    return sendResponse(res, 500, 'Internal server error during validation')
+  }
 }
 export function isAdmin (req, res, next) {
-  if (!req.user.isAdmin) {
-    return res.status(403).json({ message: 'FORBIDDEN: Access denied!' })
+  const user = req.locals.user
+
+  if (!user) return sendResponse(res, 403, 'FORBIDDEN: Access denied!', true)
+
+  if (!user.isAdmin) {
+    const message = 'Forbidden: admin privilegesrequired'
+    return sendResponse(res, 403, message, true)
   }
+
   next()
 }
-export async function extractAndValidateTokens (req, res, next) {
-  const authHeader = req.headers['authorization']
-  const superHeader = req.headers['admin-token']
+export const extractAndValidateToken = async (req, res, next) => {
+  try {
+    const accessToken = await extractBearerToken(req, 'standard-auth')
 
-  if (!authHeader || !superHeader) {
-    return res.status(401).json({ error: 'Unauthorized: Missing tokens' })
+    if (!accessToken)
+      return sendResponse(res, 401, 'Unauthorized: Missing token', true)
+
+    // Attempt to verify the token with both secrets
+    const secrets = [ACCESS_ADMIN_TOKEN, SUPER_USER_TOKEN]
+    let userObject
+
+    for (const secret of secrets) {
+      try {
+        userObject = jwt.verify(accessToken, secret)
+        break
+      } catch (err) {
+        continue
+      }
+    }
+
+    if (!userObject) {
+      throw new Error('Token verification failed with all provided secrets')
+    }
+
+    // Attach user data to req.locals
+    req.locals = req.locals || {}
+    req.locals.user = userObject
+
+    next()
+  } catch (error) {
+    const message = 'Unauthorized: Invalid or expired token'
+    devLogger(`Token validation error ${error.message || error}`, 'error', true)
+    return sendResponse(res, 401, message, true)
   }
+}
+export const evalSuperUserToken = async (req, res, next) => {
+  const superAuthHeaderToken = await extractBearerToken(req, 'super-auth')
 
-  const [bearer, accessToken] = authHeader.split(' ')
-
-  if (bearer !== 'Bearer' || !accessToken) {
-    return res.status(401).json({ error: 'Invalid Authorization header' })
+  if (!superAuthHeaderToken) {
+    const message = 'FORBIDDEN: Unauthorized request. Missing superuser token'
+    return sendResponse(res, 401, message, true)
   }
 
   try {
-    // Verify both tokens
-    const decodedAccessToken = verifyToken(accessToken, ACCESS_ADMIN_TOKEN)
-    const decodedSuperToken = verifyToken(superHeader, SUPER_USER_TOKEN)
+    const decryptedUser = verifyToken(superAuthHeaderToken, SUPER_USER_TOKEN)
+    const dbUser = await USER_MODEL.findById(decryptedUser._id)
 
-    // Check tokens against database records
-    const user = await USER_MODEL.findOne({ _id: decodedAccessToken._id })
+    if (!dbUser) return sendResponse(res, 404, 'User not found', true)
 
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' })
+    const superUserToken = dbUser._id
+
+    if (superUserToken !== dbUser._id.toString()) {
+      const message = 'UNAUTHORIZED: Access denied.'
+      return sendResponse(res, 403, message, true)
     }
 
-    // Check if tokens match
-    if (!(await compareTokens(accessToken, user.accessToken))) {
-      return res.status(401).json({ error: 'Invalid access token' })
+    // Step 5: Ensure the user has superuser privileges
+    if (!dbUser.isSuperUser) {
+      const message = 'FORBIDDEN: higher privileges required to complete task.'
+      return sendResponse(res, 403, message, true)
     }
 
-    if (!(await compareTokens(superHeader, user.superUserToken))) {
-      return res.status(401).json({ error: 'Invalid super token' })
-    }
+    req.locals = req.locals || {}
+    req.locals.superUser = dbUser
 
-    // Attach user to request
-    req.user = user
     next()
   } catch (error) {
-    console.error('Token validation error:', error.message || error)
-    return res.status(401).json({ error: 'Authentication failed' })
+    const message = `Token validation error: ${error}`
+    devLogger(message, 'error', true)
+    return sendResponse(res, 500, message, true)
   }
 }
-export async function hashToken (token) {
-  const saltRounds = 10
-  return await bcrypt.hash(token, saltRounds)
+export async function authenticateUser (req, res, next) {
+  const accessToken = extractBearerToken(req, 'standard-auth')
+
+  if (!accessToken)
+    return sendResponse(res, 401, 'Unauthorized: Missing token', true)
+
+  const decodedToken = verifyToken(accessToken, ACCESS_ADMIN_TOKEN)
+  if (!decodedToken) {
+    const message = 'Unauthorized: Invalid or expired token'
+    devLogger(message, 'error', true)
+    return sendResponse(res, 401, message, true)
+  }
+
+  try {
+    const user = await USER_MODEL.findById(decodedToken._id)
+
+    if (!user) {
+      const message = 'Unauthorized: User does not exist'
+      devLogger(message, 'error', true)
+      return sendResponse(res, 403, message, true)
+    }
+
+    req.locals = { user }
+    next()
+  } catch (error) {
+    const message = `Error in authentication middleware: ${error.message}`
+    const resMessage = 'An error occurred during authentication'
+    devLogger(message, 'error', true)
+    return sendResponse(res, 500, resMessage, true, {
+      error: error.message
+    })
+  }
 }
 
-export async function compareTokens (plainToken, hashedToken) {
-  return await bcrypt.compare(plainToken, hashedToken)
+export const genJWTToken = async (data, superUserToken) => {
+  const expiresIn = '7d' // Correct format for expiration time (e.g., '1h', '30m', '7d')
+
+  const payload = typeof data === 'string' ? { data } : { ...data }
+
+  if (payload.isSuperUser) {
+    payload.superUserToken = superUserToken
+  }
+
+  return new Promise((resolve, reject) => {
+    jwt.sign(payload, ACCESS_ADMIN_TOKEN, { expiresIn }, (err, token) => {
+      if (err) {
+        return reject(err)
+      }
+      resolve(token)
+    })
+  })
 }

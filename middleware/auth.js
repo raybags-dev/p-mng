@@ -1,204 +1,178 @@
-// src/middleware/auth.js
+import 'dotenv/config'
+const { SUPER_USER_TOKEN, ACCESS_ADMIN_TOKEN } = process.env
 import { USER_MODEL } from '../src/models/user.js'
-import jwt from 'jsonwebtoken'
-import bcrypt from 'bcrypt'
-import { config } from 'dotenv'
-
-config()
-
-const { SUPER_USER_TOKEN } = process.env
 
 import { sendResponse } from './util.js'
 import devLogger from './loggers.js'
-import { encrypt, generateRandomToken } from '../utils/tokenUtils.js'
+import {
+  genJWTToken,
+  verifyToken,
+  genRandomToken,
+  extractBearerToken,
+  validatePassword
+} from '../utils/tokenUtils.js'
 
-const SUPERUSER_TOKEN_EXPIRY = 24 * 60 * 60 * 1000
-
-export const generateSecureToken = (payload, secret, expiresIn = '1h') => {
-  return jwt.sign(payload, secret, { expiresIn })
-}
-
-//**** */
-
-//**** */
-
-// export const loginHelper = async (req, res, next) => {
-//   const { email, password } = req.body
-
-//   try {
-//     // Fetch the user from the database
-//     const user = await USER_MODEL.findOne({ email })
-//     if (!user) {
-//       return res.status(404).json({ error: 'User not found' })
-//     }
-
-//     // Check if the password is correct
-//     const isPasswordValid = await bcrypt.compare(password, user.password)
-//     if (!isPasswordValid) {
-//       return res.status(401).json({ error: 'Invalid credentials' })
-//     }
-
-//     // Generate tokens
-//     const accessToken = generateSecureToken(
-//       { _id: user._id },
-//       ACCESS_ADMIN_TOKEN
-//     )
-//     const superUserToken = user.isSuperUser
-//       ? generateSecureToken({ _id: user._id }, SUPER_USER_TOKEN)
-//       : null
-
-//     // Set tokens in response headers
-//     res.setHeader('auth-token', accessToken)
-//     if (user.isAdmin) res.setHeader('admin-token', accessToken)
-//     if (user.isSuperUser) res.setHeader('super-user-token', superUserToken)
-
-//     // Attach user to request object
-//     req.user = user
-
-//     next()
-//   } catch (error) {
-//     console.error('Login helper error:', error.message || error)
-//     res.status(500).json({ error: 'Internal server error' })
-//   }
-// }
+const TOKEN_EXPIRY = 24 * 60 * 60 * 1000
 
 export const loginHelper = async (req, res, next) => {
   const { email, password } = req.body
 
   try {
     const user = await USER_MODEL.findOne({ email })
-    if (!user) {
-      return sendResponse(res, 404, 'User not found', true)
-    }
+    if (!user)
+      return sendResponse(res, 403, 'Unauthorized: User does not exist', true)
 
-    const isPasswordValid = await bcrypt.compare(password, user.password)
-    if (!isPasswordValid) {
-      return sendResponse(res, 401, 'Invalid credentials', true)
-    }
+    await validatePassword(password, user.password)
 
     // Generate a new session token
-    const sessionToken = generateRandomToken()
+    const sessionToken = genRandomToken()
     user.sessionTokens.push(sessionToken)
     await user.save()
 
-    // Set tokens in response headers
-    res.setHeader('auth-token', sessionToken)
-    // if (user.isAdmin) res.setHeader('admin-token', sessionToken)
-    if (user.isSuperUser) {
-      const superUserToken = generateSecureToken(
-        {
-          _id: user._id,
-          email: user.email,
-          isAdmin: user.isAdmin,
-          isSuperUser: user.isSuperUser || false,
-          superUserToken: user.isSuperUser ? superUserToken : null
-        },
-        SUPER_USER_TOKEN
-      )
-      res.setHeader('super-user-token', superUserToken)
+    req.locals = req.locals || {}
+    req.locals.user = user
+
+    const userPayload = {
+      _id: user._id.toString(),
+      uuid: user.uuid,
+      name: user.name,
+      email: user.email,
+      isAdmin: user.isAdmin || false,
+      isSuperUser: user.isSuperUser || false,
+      userId: user.userId.toString(),
+      sessionTokens: user.sessionTokens[0],
+      isSubscribed: user.isSubscribed || false,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
     }
 
-    req.user = user
+    if (user.isAdmin && user.isSuperUser) {
+      const superUserToken = await genJWTToken(userPayload, SUPER_USER_TOKEN)
+      res.setHeader('super-auth', `Bearer ${superUserToken}`)
+    }
+    const userToken = await genJWTToken(userPayload, sessionToken)
+    res.setHeader('standard-auth', `Bearer ${userToken}`)
+
     next()
   } catch (error) {
-    devLogger(`Login helper error: '${error.message || error}`, 'error')
+    devLogger(`Login helper error: ${error.message || error}`, 'error')
     sendResponse(res, 500, 'Internal server error', true)
   }
 }
-
 export const logoutHelper = async (req, res, next) => {
   try {
-    const token = req.headers['auth-token']
-    if (!token) return sendResponse(res, 400, 'Session token is required', true)
+    const authHeader = req.headers['standard-auth'] || ''
+    const accessToken = authHeader.replace('Bearer ', '').trim()
 
     const fromAllDevices = req.query['from-all-devices'] === 'true'
 
-    const user = await USER_MODEL.findOne({ sessionTokens: token })
-    if (!user)
-      return sendResponse(
-        res,
-        404,
-        'User not found or already logged out',
-        true
-      )
-    let seesion_tokens_to_remove
-
-    if (fromAllDevices) {
-      seesion_tokens_to_remove = [...user.sessionTokens]
-      user.sessionTokens = []
-    } else {
-      seesion_tokens_to_remove = [token]
-
-      user.sessionTokens = user.sessionTokens.filter(t => t !== token)
+    if (!req.locals || !req.locals.user) {
+      return sendResponse(res, 400, 'Bad request: No active user session', true)
     }
 
-    // Save the updated user
-    await user.save()
+    const user = req.locals.user
+    const currentUserId = user._id
 
-    const tokens = { tokens: seesion_tokens_to_remove }
+    // Verify the access token
+    const currentLocalUser = verifyToken(accessToken, ACCESS_ADMIN_TOKEN)
 
-    sendResponse(
-      res,
-      200,
-      `Logout successful${fromAllDevices ? ' from all devices' : ''}`,
-      false,
-      tokens
-    )
+    // Retrieve the user from the database
+    const dbUser = await USER_MODEL.findById(currentUserId)
+    if (!dbUser) {
+      const message = 'User not found or already logged out!'
+      return sendResponse(res, 404, message, true)
+    }
+
+    if (!dbUser.sessionTokens.includes(currentLocalUser.sessionTokens)) {
+      const message = 'User not found or already logged out'
+      return sendResponse(res, 404, message, true)
+    }
+
+    let sessionTokensToRemove
+    if (fromAllDevices) {
+      sessionTokensToRemove = [...dbUser.sessionTokens]
+      dbUser.sessionTokens = []
+    } else {
+      sessionTokensToRemove = [currentLocalUser.sessionTokens]
+      dbUser.sessionTokens = dbUser.sessionTokens.filter(
+        token => token !== currentLocalUser.sessionTokens
+      )
+    }
+
+    await dbUser.save()
+
+    res.setHeader('standard-auth', '')
+    res.setHeader('super-auth', '')
+
     next()
   } catch (error) {
-    devLogger(`Logout helper error: ${error.message || error}`, 'error')
-    sendResponse(res, 500, 'Internal server error', true)
+    devLogger(`Logout Helper Error: ${error}`, 'error')
+    return sendResponse(res, 500, 'Internal server error during logout', true)
   }
 }
-
-export const elevateHelper = async (req, res, next) => {
+export const elevatePrevilageHelper = async (req, res, next) => {
   try {
-    const { userId, password } = req.body
+    const accessToken = await extractBearerToken(req, 'standard-auth')
 
-    // Find the user by ID
-    const user = await USER_MODEL.findById(userId)
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' })
+    if (!accessToken) {
+      return res.status(401).json({ message: 'Unauthorized: Missing token' })
     }
 
-    // Verify the user's password (re-authentication for security)
-    const isPasswordValid = await bcrypt.compare(password, user.password)
-    if (!isPasswordValid) {
-      return res.status(401).json({ error: 'Invalid credentials' })
+    const localDecodedUser = verifyToken(accessToken, ACCESS_ADMIN_TOKEN)
+
+    if (!localDecodedUser) {
+      return res
+        .status(401)
+        .json({ message: 'Unauthorized: Invalid or expired token' })
     }
 
-    // Empty the sessionTokens array
-    user.sessionTokens = []
+    const currentUserId = localDecodedUser._id
 
-    // Set the user as a superuser
-    user.isSuperUser = true
+    const dbUser = await USER_MODEL.findById(currentUserId)
 
-    // Generate a new session token
-    const sessionToken = generateRandomToken()
-    user.sessionTokens.push(sessionToken)
+    if (!dbUser) {
+      const message = 'User not found or already logged out!'
+      return sendResponse(res, 404, message, true)
+    }
 
-    // Generate and encrypt the super-user token
-    const superUserToken = generateRandomToken()
-    const encryptedSuperUserToken = encrypt(superUserToken)
+    // Check if the user is already a superuser
+    if (
+      dbUser.isSuperUser &&
+      dbUser.superUserToken &&
+      dbUser.superUserTokenExpiry > new Date()
+    ) {
+      req.locals = req.locals || {}
+      req.locals.superUser = dbUser
+    }
 
-    // Store the encrypted token and its expiry time in the database
-    user.superUserToken = encryptedSuperUserToken
-    user.superUserTokenExpiry = Date.now() + SUPERUSER_TOKEN_EXPIRY
+    // Generate a new superuser token
+    const superUserToken = await genJWTToken(
+      accessToken,
+      SUPER_USER_TOKEN,
+      TOKEN_EXPIRY
+    )
+
+    // Set superuser token and expiry
+    const superUserTokenExpiry = new Date()
+
+    superUserTokenExpiry.setHours(superUserTokenExpiry.getHours() + 1)
+    dbUser.superUserToken = superUserToken
+    dbUser.superUserTokenExpiry = superUserTokenExpiry
+    dbUser.isSuperUser = true
 
     // Save the updated user
-    await user.save()
+    await dbUser.save()
 
-    // Set the new session token in response headers
-    res.setHeader('auth-token', sessionToken)
-    res.setHeader('super-user-token', superUserToken)
+    req.locals = req.locals || {}
+    req.locals.superUser = dbUser
 
-    // Add the updated user to the request object
-    req.user = user
+    // Set headers with the new tokens
+    res.setHeader('standard-auth', `Bearer ${accessToken}`)
+    res.setHeader('super-auth', `Bearer ${superUserToken}`)
 
-    // Continue to the next middleware/controller
     next()
   } catch (error) {
-    console.error('Elevate helper error:', error.message || error)
+    devLogger(`Elevate helper error: ${error}`, 'error')
     res.status(500).json({ error: 'Internal server error' })
   }
 }

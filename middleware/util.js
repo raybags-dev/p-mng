@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid'
 import devLogger from '../middleware/loggers.js'
 
 const execPromise = util.promisify(exec)
-export const genUniqueIdentifer = () => uuidv4()
+export const genUUID = () => uuidv4()
 export async function clearDevPort (port) {
   try {
     const { stdout, stderr } = await execPromise(`lsof -ti:${port}`)
@@ -42,10 +42,10 @@ export const sendResponse = (
   res,
   status,
   message,
-  error = false,
+  isError = false,
   data = {}
 ) => {
-  const resMsg = getResponse(status, message, error, data)
+  const resMsg = getResponse(status, message, isError, data)
   return res.status(status).json(resMsg)
 }
 export const sanitizeDBObject = (object, fieldsToRemove) => {

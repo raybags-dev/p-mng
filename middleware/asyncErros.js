@@ -6,13 +6,27 @@ export function asyncMiddleware (handler) {
     try {
       await handler(req, res, next)
     } catch (ex) {
-      const startTime = Date.now()
+      const mongoValidationMessages = [
+        'CastError: Cast to ObjectId failed for value',
+        'CastError'
+      ]
+
       const statusCode = ex.statusCode || 500
       const errorMessage = ex.message || 'Internal Server Error'
 
-      devLogger(`${ex}`, 'error')
+      const isMongoValidationError = mongoValidationMessages.some(msg =>
+        ex.message.includes(msg)
+      )
 
-      sendResponse(res, statusCode, 'Error occurred', startTime, true, {
+      if (isMongoValidationError) {
+        devLogger(`MongoDB Validation Error: ${ex.message}`, 'error')
+        return sendResponse(res, 400, 'Bad Request: Invalid input', true, {
+          error: errorMessage
+        })
+      }
+
+      devLogger(`Error: ${errorMessage}`, 'error')
+      return sendResponse(res, statusCode, 'Error occurred', true, {
         error: errorMessage
       })
 
@@ -29,21 +43,3 @@ export async function asyncHandler (func) {
     throw new Error(error.message || 'Something went wrong in async function')
   }
 }
-
-// export function asyncMiddleware (handler) {
-//   return async (req, res, next) => {
-//     try {
-//       await handler(req, res)
-//     } catch (ex) {
-//       const statusCode = ex.statusCode || 500
-//       res.status(statusCode).json({
-//         status: 'error',
-//         message: `'Internal Server Error: ${ex}`
-//       })
-//       console.error('Error message:', ex.message)
-//       if (typeof next === 'function') {
-//         next({ error: 'something went wrong!\n', message: ex })
-//       }
-//     }
-//   }
-// }
