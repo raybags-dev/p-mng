@@ -34,12 +34,16 @@ const routes = [
   {
     method: 'post',
     path: '/ray-bags/manager-node/user/login',
-    handler: [loginHelper, asyncMiddleware(Login)]
+    handler: [asyncMiddleware(loginHelper), asyncMiddleware(Login)]
   },
   {
     method: 'post',
     path: '/ray-bags/manager-node/user/logout',
-    handler: [extractAndValidateToken, logoutHelper, asyncMiddleware(Logout)]
+    handler: [
+      extractAndValidateToken,
+      asyncMiddleware(logoutHelper),
+      asyncMiddleware(Logout)
+    ]
   },
   {
     method: 'post',
@@ -62,7 +66,7 @@ const routes = [
     handler: [
       authenticateUser,
       isAdmin,
-      elevatePrevilageHelper,
+      asyncMiddleware(elevatePrevilageHelper),
       asyncMiddleware(PromoteToSuperUser)
     ]
   }

@@ -187,7 +187,7 @@ export const extractAndValidateToken = async (req, res, next) => {
     next()
   } catch (error) {
     const message = 'Unauthorized: Invalid or expired token'
-    devLogger(`Token validation error ${error.message || error}`, 'error', true)
+    devLogger(`${error.message || error}`, 'error', true)
     return sendResponse(res, 401, message, true)
   }
 }
@@ -253,6 +253,7 @@ export async function authenticateUser (req, res, next) {
     req.locals = { user }
     next()
   } catch (error) {
+    console.log(error.message)
     const message = `Error in authentication middleware: ${error.message}`
     const resMessage = 'An error occurred during authentication'
     devLogger(message, 'error', true)
@@ -261,7 +262,6 @@ export async function authenticateUser (req, res, next) {
     })
   }
 }
-
 export const genJWTToken = async (data, superUserToken) => {
   const expiresIn = '7d' // Correct format for expiration time (e.g., '1h', '30m', '7d')
 
