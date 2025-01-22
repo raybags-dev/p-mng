@@ -7,7 +7,7 @@ export function asyncMiddleware (handler) {
       await handler(req, res, next)
     } catch (ex) {
       const mongoValidationMessages = [
-        'CastError: Cast to ObjectId failed for value',
+        'Cast to ObjectId failed for value',
         'CastError'
       ]
 
@@ -18,28 +18,23 @@ export function asyncMiddleware (handler) {
         ex.message.includes(msg)
       )
 
+      const sourceFunctionName = handler.name || 'Anonymous Function'
+
       if (isMongoValidationError) {
-        devLogger(`MongoDB Validation Error: ${ex.message}`, 'error')
-        return sendResponse(res, 400, 'Bad Request: Invalid input', true, {
+        const errMessage = `MongoDB Validation Error in "${sourceFunctionName}": ${ex.message}`
+        const resMessage = 'Bad Request: Invalid input'
+        devLogger(errMessage, 'error')
+        return sendResponse(res, 400, resMessage, true, {
           error: errorMessage
         })
       }
 
-      devLogger(`Error: ${errorMessage}`, 'error')
-      return sendResponse(res, statusCode, 'Error occurred', true, {
+      devLogger(`Error in "${sourceFunctionName}": ${errorMessage}`, 'error')
+      return sendResponse(res, statusCode, 'Error occurred!', true, {
         error: errorMessage
       })
 
-      if (next) next(ex)
+      // if (next) next(ex)
     }
-  }
-}
-
-export async function asyncHandler (func) {
-  try {
-    return await func()
-  } catch (error) {
-    devLogger(`Error occurred in async function:, ${error}`, 'error')
-    throw new Error(error.message || 'Something went wrong in async function')
   }
 }
