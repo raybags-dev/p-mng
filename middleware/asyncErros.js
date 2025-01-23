@@ -33,8 +33,21 @@ export function asyncMiddleware (handler) {
       return sendResponse(res, statusCode, 'Error occurred!', true, {
         error: errorMessage
       })
-
-      // if (next) next(ex)
     }
   }
+}
+
+export function generalErrors (err, req, res, next) {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    const errorMessage = 'Invalid JSON payload passed in the request body'
+    devLogger(`Syntax Error: ${err}`, 'error')
+    return sendResponse(res, 400, errorMessage, true, {
+      error: err.message
+    })
+  }
+
+  const errorMessage = err.message || 'An unexpected error occurred'
+  const statusCode = err.status || 500
+  devLogger(`Unexpected Error: ${err}`, 'error')
+  return sendResponse(res, statusCode, errorMessage, true)
 }

@@ -2,9 +2,11 @@
 // import { ObjectId } from 'mongodb'
 // import { PASSWORD_MODEL } from '../models/documentModel.js'
 import 'dotenv/config'
-import { ObjectId } from 'mongodb'
 import { USER_MODEL, USER_ID_MODEL } from '../models/user.js'
-import { verifyToken, extractBearerToken } from '../../utils/tokenUtils.js'
+import {
+  extractBearerToken,
+  decodeUserFromToken
+} from '../../utils/tokenUtils.js'
 import {
   genUUID,
   sendResponse,
@@ -112,8 +114,7 @@ const ControllerRegistry = {
     }
   },
   GetCurrentUser: async (req, res) => {
-    const authHeader = req.headers['standard-auth'] || ''
-    const accessToken = authHeader.replace('Bearer ', '').trim()
+    const accessToken = extractBearerToken(req, 'standard-auth')
 
     const omissionList = [
       '__v',
@@ -131,57 +132,7 @@ const ControllerRegistry = {
     // Decode the JWT to extract the session token
     let decodedToken
 
-    decodedToken = verifyToken(accessToken, ACCESS_ADMIN_TOKEN)
-    if (!decodedToken) {
-      let message = 'Unauthorized: Invalid or expired token'
-      return sendResponse(res, 401, message, true)
-    }
-
-    const { _id, sessionTokens: sessionTokenFromJWT } = decodedToken
-
-    // Fetch user from the database
-    const dbUser = await USER_MODEL.findById(_id)
-    if (!dbUser) {
-      return sendResponse(res, 404, 'User not found in database', true)
-    }
-
-    // Verify if the session token exists in the user's sessionTokens array
-    const isTokenValid = dbUser.sessionTokens.includes(sessionTokenFromJWT)
-    if (!isTokenValid) {
-      let message = 'Unauthorized: Session token mismatch'
-      return sendResponse(res, 401, message, true)
-    }
-
-    const modifiedUser = sanitizeDBObject(dbUser, omissionList)
-
-    return sendResponse(res, 200, modifiedUser, false)
-  },
-  GetCurrentUser: async (req, res) => {
-    const authHeader = req.headers['standard-auth'] || ''
-    const accessToken = authHeader.replace('Bearer ', '').trim()
-
-    const omissionList = [
-      '__v',
-      'password',
-      'sessionTokens',
-      'passwordResetToken',
-      'superUserToken'
-    ]
-
-    if (!accessToken) {
-      let message = 'Unauthorized: Missing standard-auth token'
-      return sendResponse(res, 401, message, true)
-    }
-
-    // Decode the JWT to extract the session token
-    let decodedToken
-
-    decodedToken = verifyToken(accessToken, ACCESS_ADMIN_TOKEN)
-    if (!decodedToken) {
-      let message = 'Unauthorized: Invalid or expired token'
-      return sendResponse(res, 401, message, true)
-    }
-
+    decodedToken = await decodeUserFromToken(accessToken, ACCESS_ADMIN_TOKEN)
     const { _id, sessionTokens: sessionTokenFromJWT } = decodedToken
 
     // Fetch user from the database
@@ -243,7 +194,11 @@ const ControllerRegistry = {
     // Extract and validate the active session token
     const activeSessionTokens = currentUser.sessionTokens
     const authHeaderToken = extractBearerToken(req, 'standard-auth')
-    const decryptedUser = verifyToken(authHeaderToken, ACCESS_ADMIN_TOKEN)
+
+    const decryptedUser = await decodeUserFromToken(
+      authHeaderToken,
+      ACCESS_ADMIN_TOKEN
+    )
 
     const isTokenMatch = activeSessionTokens.includes(
       decryptedUser.sessionTokens
@@ -280,7 +235,6 @@ const ControllerRegistry = {
     devLogger(message, 'error', false)
     return sendResponse(res, 403, message, true, {})
   },
-
   PromoteToSuperUser: async (req, res) => {
     const omissionList = [
       '__v',
@@ -310,6 +264,100 @@ const ControllerRegistry = {
     if (!req.locals.isJustPromotedToSuperUser) {
       const message = 'User is already a superuser.'
       return sendResponse(res, 202, message, false, user_object)
+    }
+  },
+  GetUser: async (req, res) => {
+    const accessToken = extractBearerToken(req, 'standard-auth')
+
+    const id = req.params.id
+    const { page = 1 } = req.query
+
+    const omissionList = [
+      '__v',
+      'password',
+      'sessionTokens',
+      'passwordResetToken',
+      'superUserToken'
+    ]
+
+    const localSuperUser = req.locals?.superUser
+    const currentUser = req.locals?.user
+
+    if (!localSuperUser?.isSuperUser || !currentUser?.isAdmin) {
+      const message = 'Only super admins can complete this task'
+      devLogger(message, 'error', false)
+      return sendResponse(res, 403, message, true, {})
+    }
+
+    const decodedUser = await decodeUserFromToken(
+      accessToken,
+      ACCESS_ADMIN_TOKEN
+    )
+
+    const isAuthorizedUser = localSuperUser.sessionTokens.includes(
+      decodedUser.sessionTokens
+    )
+
+    if (!isAuthorizedUser) {
+      const message = 'FORBIDDED inficient authorization'
+      devLogger(message, 'error', false)
+      return sendResponse(res, 400, message, true, {})
+    }
+
+    if (id === 'all') {
+      const limit = 10
+      const skip = (Math.max(page, 1) - 1) * limit
+      const totalUsers = await USER_MODEL.countDocuments()
+      const users = await USER_MODEL.find().skip(skip).limit(limit)
+      const sanitizedUsers = users.map(user =>
+        sanitizeDBObject(user, omissionList)
+      )
+
+      const totalPages = Math.ceil(totalUsers / limit)
+      const lastPage = totalPages > 0 ? totalPages : 1
+
+      return sendResponse(res, 200, sanitizedUsers, false, {
+        pagination: {
+          numberOfPages: totalPages,
+          currentPage: Math.max(page, 1),
+          lastPage
+        }
+      })
+    }
+
+    const dbUser = await USER_MODEL.findById(id)
+    if (!dbUser) {
+      return sendResponse(res, 404, 'User not found in database', true)
+    }
+
+    const sanitizedUser = sanitizeDBObject(dbUser, omissionList)
+    return sendResponse(res, 200, sanitizedUser, false)
+  },
+  UpdateUser: async (req, res) => {
+    try {
+      const { targetUser, sanitizedFields, isUpdatingSelf } = req.locals
+
+      Object.assign(targetUser, sanitizedFields)
+      const updatedUser = await targetUser.save()
+
+      if (isUpdatingSelf) {
+        req.locals.user = updatedUser
+        if (updatedUser.isSuperUser) {
+          req.locals.superUser = updatedUser
+        }
+      }
+
+      return sendResponse(res, 200, updatedUser, false, {
+        message: 'User updated successfully'
+      })
+    } catch (error) {
+      devLogger(`Error in UpdateUser: ${error.message}`, 'error')
+      return sendResponse(
+        res,
+        500,
+        'An error occurred while updating the user',
+        true
+      )
     }
   }
 }

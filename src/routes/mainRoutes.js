@@ -5,6 +5,7 @@ import { asyncMiddleware } from '../../middleware/asyncErros.js'
 import {
   loginHelper,
   logoutHelper,
+  updateHelper,
   elevatePrevilageHelper
 } from '../../middleware/auth.js'
 import {
@@ -17,11 +18,13 @@ import {
 import ControllerRegistry from '../controllers/controllerRegistry.js'
 
 const {
-  CreateUser,
   Login,
   Logout,
-  GetCurrentUser,
+  GetUser,
+  UpdateUser,
+  CreateUser,
   DeleteUser,
+  GetCurrentUser,
   PromoteToSuperUser
 } = ControllerRegistry
 
@@ -69,6 +72,16 @@ const routes = [
       asyncMiddleware(elevatePrevilageHelper),
       asyncMiddleware(PromoteToSuperUser)
     ]
+  },
+  {
+    method: 'get',
+    path: '/ray-bags/manager-node/user/:id',
+    handler: [authenticateUser, isSuperUser, asyncMiddleware(GetUser)]
+  },
+  {
+    method: 'put',
+    path: '/ray-bags/manager-node/user/update/:id?',
+    handler: [authenticateUser, updateHelper, asyncMiddleware(UpdateUser)]
   }
 ]
 routes.forEach(({ method, path, handler }) => {

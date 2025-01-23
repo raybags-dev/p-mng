@@ -6,10 +6,10 @@ import { sendResponse } from './util.js'
 import devLogger from './loggers.js'
 import {
   genJWTToken,
-  verifyToken,
   genRandomToken,
+  validatePassword,
   extractBearerToken,
-  validatePassword
+  decodeUserFromToken
 } from '../utils/tokenUtils.js'
 
 const TOKEN_EXPIRY = 24 * 60 * 60 * 1000
@@ -55,8 +55,7 @@ export const loginHelper = async (req, res, next) => {
   next()
 }
 export const logoutHelper = async (req, res, next) => {
-  const authHeader = req.headers['standard-auth'] || ''
-  const accessToken = authHeader.replace('Bearer ', '').trim()
+  const accessToken = extractBearerToken(req, 'standard-auth')
 
   const fromAllDevices = req.query['from-all-devices'] === 'true'
 
@@ -67,8 +66,11 @@ export const logoutHelper = async (req, res, next) => {
   const user = req.locals.user
   const currentUserId = user._id
 
-  // Verify the access token
-  const currentLocalUser = verifyToken(accessToken, ACCESS_ADMIN_TOKEN)
+  // Verify access token
+  const currentLocalUser = await decodeUserFromToken(
+    accessToken,
+    ACCESS_ADMIN_TOKEN
+  )
 
   // Retrieve the user from the database
   const dbUser = await USER_MODEL.findById(currentUserId)
@@ -82,7 +84,8 @@ export const logoutHelper = async (req, res, next) => {
     return sendResponse(res, 404, message, true)
   }
 
-  let sessionTokensToRemove
+  let sessionTokensToRemove = null
+
   if (fromAllDevices) {
     sessionTokensToRemove = [...dbUser.sessionTokens]
     dbUser.sessionTokens = []
@@ -107,16 +110,12 @@ export const elevatePrevilageHelper = async (req, res, next) => {
     return res.status(401).json({ message: 'Unauthorized: Missing token' })
   }
 
-  const localDecodedUser = verifyToken(accessToken, ACCESS_ADMIN_TOKEN)
-
-  if (!localDecodedUser) {
-    return res
-      .status(401)
-      .json({ message: 'Unauthorized: Invalid or expired token' })
-  }
+  const localDecodedUser = await decodeUserFromToken(
+    accessToken,
+    ACCESS_ADMIN_TOKEN
+  )
 
   const currentUserId = localDecodedUser._id
-
   const dbUser = await USER_MODEL.findById(currentUserId)
 
   if (!dbUser) {
@@ -163,4 +162,109 @@ export const elevatePrevilageHelper = async (req, res, next) => {
   res.setHeader('super-auth', `Bearer ${superUserToken}`)
 
   next()
+}
+
+export const updateHelper = async (req, res, next) => {
+  try {
+    const { id: targetUserId } = req.params
+    const accessToken = extractBearerToken(req, 'standard-auth')
+    const updateFields = req.body
+
+    // Fields that cannot be modified
+    const restrictedFields = [
+      '__v',
+      '_id',
+      'isAdmin',
+      'isSuperUser',
+      'sessionTokens',
+      'superUserToken',
+      'createdAt',
+      'updatedAt'
+    ]
+
+    const currentUser = req.locals?.user
+    const isSuperUser = req.locals?.superUser?.isSuperUser
+
+    if (!currentUser) {
+      return sendResponse(res, 500, 'Current user context not found', true)
+    }
+
+    const isUpdatingSelf = !targetUserId || targetUserId === currentUser._id
+    const userIdToUpdate = isUpdatingSelf ? currentUser._id : targetUserId
+
+    const decodedUser = await decodeUserFromToken(
+      accessToken,
+      ACCESS_ADMIN_TOKEN
+    )
+    const isAuthorizedUser = currentUser.sessionTokens.includes(
+      decodedUser.sessionTokens
+    )
+
+    const isAuthorized = isUpdatingSelf || (isSuperUser && isAuthorizedUser)
+
+    if (!isAuthorized) {
+      const res_message = 'You are not authorized to update this user'
+      return sendResponse(res, 403, res_message, true)
+    }
+
+    const targetUser = await USER_MODEL.findById(userIdToUpdate)
+    if (!targetUser) {
+      return sendResponse(res, 404, 'User not found', true)
+    }
+
+    // Define a list of valid fields for updating
+    const updatableFields = Object.keys(targetUser.toObject()).filter(
+      key => !restrictedFields.includes(key)
+    )
+
+    // Separate restricted and unrecognized fields
+    const restrictedDetected = Object.keys(updateFields).filter(key =>
+      restrictedFields.includes(key)
+    )
+
+    const unrecognizedFields = Object.keys(updateFields).filter(
+      key => !updatableFields.includes(key) && !restrictedFields.includes(key)
+    )
+
+    // Handle errors for restricted and unrecognized fields
+    if (restrictedDetected.length > 0) {
+      const res_message = `${restrictedDetected.join(', ')} may not be modified`
+      return sendResponse(res, 400, res_message, true)
+    }
+
+    if (unrecognizedFields.length > 0) {
+      const res_message = `Unrecognized field detected: ${unrecognizedFields.join(
+        ', '
+      )}`
+      return sendResponse(res, 400, res_message, true)
+    }
+
+    // Sanitize update fields by removing restricted fields
+    const sanitizedFields = Object.keys(updateFields)
+      .filter(key => updatableFields.includes(key))
+      .reduce((obj, key) => {
+        obj[key] = updateFields[key]
+        return obj
+      }, {})
+
+    // Check if fields are identical to DB values
+    const areFieldsIdentical = Object.entries(sanitizedFields).every(
+      ([key, value]) => targetUser[key] === value
+    )
+
+    if (areFieldsIdentical) {
+      const res_message = 'No changes detected in the update payload'
+      return sendResponse(res, 201, res_message, true)
+    }
+
+    req.locals = req.locals || {}
+    req.locals.targetUser = targetUser
+    req.locals.sanitizedFields = sanitizedFields
+    req.locals.isUpdatingSelf = isUpdatingSelf
+    next()
+  } catch (error) {
+    devLogger(`Error in updateHelper: ${error.message}`, 'error')
+    const res_message = 'An error occurred while processing the update'
+    return sendResponse(res, 500, res_message, true)
+  }
 }
