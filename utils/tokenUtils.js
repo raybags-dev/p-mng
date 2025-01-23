@@ -12,7 +12,7 @@ import devLogger from '../middleware/loggers.js'
 const { ENCRYPTION_KEY, ACCESS_ADMIN_TOKEN, SUPER_USER_TOKEN } = process.env
 
 const ALGORITHM = 'aes-256-cbc'
-const IV_LENGTH = 16
+const IV_LENGTH = 32
 
 export function genRandomToken () {
   return randomBytes(64).toString('hex')
@@ -87,6 +87,15 @@ export function verifyToken (token, secret) {
     devLogger(`Token verification failed: ${error}`, 'error')
     return null
   }
+}
+export async function decodeUserFromToken (token, secret, res) {
+  const decodedUser = verifyToken(token, secret)
+  if (!decodedUser) {
+    const message = 'Unauthorized: Invalid or expired token'
+    sendResponse(res, 401, message, true)
+    return null
+  }
+  return decodedUser
 }
 export function checkTokenExpiry (req, res, next) {
   const { tokenExpiry } = req.user
